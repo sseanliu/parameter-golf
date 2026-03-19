@@ -726,10 +726,6 @@ class GPT(nn.Module):
             self.lm_head._zero_init = True
         self._init_weights()
 
-    def _block_for_layer(self, layer_idx: int) -> Block:
-        """Map effective layer index to shared block (round-robin)."""
-        return self.blocks[layer_idx % self.num_unique_blocks]
-
     def _init_weights(self) -> None:
         if self.tie_embeddings:
             nn.init.normal_(self.tok_emb.weight, mean=0.0, std=self.tied_embed_init_std)
@@ -748,33 +744,33 @@ class GPT(nn.Module):
                 self.iter_resid_mixes[i].data[0] = phase * torch.ones(self.iter_resid_mixes[i].shape[1])
                 self.iter_resid_mixes[i].data[1] = (1 - phase) * torch.ones(self.iter_resid_mixes[i].shape[1])
 
+    def _apply_block(self, x: Tensor, x0: Tensor, block: Block, layer_idx: int) -> Tensor:
+        """Apply a shared block with per-iteration scale/mix params."""
+        mix = self.iter_resid_mixes[layer_idx].to(dtype=x.dtype)
+        x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
+        attn_out = block.attn(block.attn_norm(x))
+        x = x + self.iter_attn_scales[layer_idx].to(dtype=x.dtype)[None, None, :] * attn_out
+        x = x + self.iter_mlp_scales[layer_idx].to(dtype=x.dtype)[None, None, :] * block.mlp(block.mlp_norm(x))
+        return x
+
     def _forward_body(self, x: Tensor) -> Tensor:
         """Shared forward logic for both training (loss) and eval (logits)."""
         x = F.rms_norm(x, (x.size(-1),))
         x0 = x
         skips: list[Tensor] = []
+        nb = self.num_unique_blocks
 
         # Encoder half: store skip connections
         for i in range(self.num_encoder_layers):
-            block = self._block_for_layer(i)
-            mix = self.iter_resid_mixes[i].to(dtype=x.dtype)
-            x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
-            attn_out = block.attn(block.attn_norm(x))
-            x = x + self.iter_attn_scales[i].to(dtype=x.dtype)[None, None, :] * attn_out
-            x = x + self.iter_mlp_scales[i].to(dtype=x.dtype)[None, None, :] * block.mlp(block.mlp_norm(x))
+            x = self._apply_block(x, x0, self.blocks[i % nb], i)
             skips.append(x)
 
         # Decoder half: consume skip connections in reverse
         for i in range(self.num_decoder_layers):
             layer_idx = self.num_encoder_layers + i
-            block = self._block_for_layer(layer_idx)
             if skips:
                 x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-            mix = self.iter_resid_mixes[layer_idx].to(dtype=x.dtype)
-            x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
-            attn_out = block.attn(block.attn_norm(x))
-            x = x + self.iter_attn_scales[layer_idx].to(dtype=x.dtype)[None, None, :] * attn_out
-            x = x + self.iter_mlp_scales[layer_idx].to(dtype=x.dtype)[None, None, :] * block.mlp(block.mlp_norm(x))
+            x = self._apply_block(x, x0, self.blocks[layer_idx % nb], layer_idx)
 
         return self.final_norm(x)
 
