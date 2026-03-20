@@ -97,6 +97,7 @@ class Hyperparameters:
     ttt_enabled = bool(int(os.environ.get("TTT_ENABLED", "1")))
     ttt_lr = float(os.environ.get("TTT_LR", 0.01))
     ttt_steps_per_chunk = int(os.environ.get("TTT_STEPS_PER_CHUNK", 1))
+    ttt_val_frac = float(os.environ.get("TTT_VAL_FRAC", 1.0))  # fraction of val data for TTT eval (0.1 = 10%)
 
 # -----------------------------
 # MUON OPTIMIZER
@@ -786,15 +787,16 @@ def _classify_param(name: str) -> str:
     return "other"
 
 def quantize_int6_per_row(t: Tensor) -> tuple[Tensor, Tensor]:
+    """Int5 quantization: 5 bits = range [-16, 15], 32 levels."""
     t32 = t.float()
     if t32.ndim == 2:
         row_max = t32.abs().amax(dim=1)
-        scale = (row_max / 31.0).clamp_min(1.0 / 31.0).to(torch.float16)
-        q = torch.clamp(torch.round(t32 / scale.float()[:, None]), -32, 31).to(torch.int8)
+        scale = (row_max / 15.0).clamp_min(1.0 / 15.0).to(torch.float16)
+        q = torch.clamp(torch.round(t32 / scale.float()[:, None]), -16, 15).to(torch.int8)
         return q, scale
     amax = t32.abs().max().item()
-    scale = torch.tensor(amax / 31.0 if amax > 0 else 1.0, dtype=torch.float16)
-    q = torch.clamp(torch.round(t32 / scale.float()), -32, 31).to(torch.int8)
+    scale = torch.tensor(amax / 15.0 if amax > 0 else 1.0, dtype=torch.float16)
+    q = torch.clamp(torch.round(t32 / scale.float()), -16, 15).to(torch.int8)
     return q, scale
 
 def mixed_quantize_int6(state_dict: dict[str, Tensor], int6_cats: set[str]):
@@ -898,8 +900,8 @@ def eval_val_ttt(
     Must be called OUTSIDE any inference_mode context. Does NOT use torch.compile.
     """
     seq_len = args.train_seq_len
-    stride = args.eval_stride if args.eval_stride > 0 else seq_len
-    total = val_tokens.numel() - 1
+    stride = seq_len  # TTT uses non-overlapping windows for speed (no stride=64)
+    total = int((val_tokens.numel() - 1) * args.ttt_val_frac)
 
     # Create fresh model (not from quantize roundtrip) -- copy weights in
     ttt_model = _create_fresh_gpt(args).to(device).bfloat16()
