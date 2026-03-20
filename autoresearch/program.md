@@ -115,9 +115,22 @@ Everyone uses int8 (8 bits/param) = ~19M params in 16MB. But int8 wastes bits --
 28. Product quantization for embedding table
 29. Learned codebook quantization
 
+### CRITICAL WARNING: The early-vs-late reversal problem
+
+Many ideas look great at step 50 but REVERSE by step 500. The baseline is already hyperoptimized. Specific failures reported by other researchers:
+- **AttnRes variants**: looked great early, baseline won by step 500
+- **SwiGLU/GeGLU**: winning at step 300, losing by step 400
+- **silu^2**: best at step 50 by a huge margin, worse than baseline at step 500
+
+**relu^2 (the baseline activation) beats every alternative tested at convergence.** Do NOT waste experiments swapping activations or attention patterns. The architecture is already near-optimal. Focus on depth and compression.
+
+On 1xH100, our 5-min budget gives ~745 steps. This is enough for meaningful signal, but be skeptical of gains that only show at early steps. Always check that improvements hold at the final step.
+
 ### Approaches that DON'T work (skip these)
 
 - **Weight sharing / ALBERT-style**: Tested extensively. Fails because unique params matter more than recycled params at this scale (~19M params). Reusing weights does NOT create new information.
+- **Activation function swaps (SwiGLU, GeGLU, silu^2, GELU)**: All tested, all lose to relu^2 at convergence despite looking good early.
+- **Attention pattern changes**: AttnRes variants regress by step 500.
 - **Hypernetworks**: Too complex to train in 10 min.
 - **Byte-level tokenizer**: The evaluation uses the fixed SentencePiece tokenizer. Can't change it.
 - **Mamba/SSM**: Requires custom CUDA kernels not available in the environment.
