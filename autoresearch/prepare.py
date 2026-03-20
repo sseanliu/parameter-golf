@@ -24,8 +24,10 @@ from torch import Tensor
 
 TIME_BUDGET = 300  # 5 minutes wall clock for training
 MAX_ARTIFACT_BYTES = 16_000_000  # 16MB hard cap
-DATA_PATH = os.environ.get("DATA_PATH", "./data/datasets/fineweb10B_sp1024")
-TOKENIZER_PATH = os.environ.get("TOKENIZER_PATH", "./data/tokenizers/fineweb_1024_bpe.model")
+# Resolve paths relative to the repo root (parent of autoresearch/)
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+DATA_PATH = os.environ.get("DATA_PATH", os.path.join(_REPO_ROOT, "data/datasets/fineweb10B_sp1024"))
+TOKENIZER_PATH = os.environ.get("TOKENIZER_PATH", os.path.join(_REPO_ROOT, "data/tokenizers/fineweb_1024_bpe.model"))
 TRAIN_FILES = os.path.join(DATA_PATH, "fineweb_train_*.bin")
 VAL_FILES = os.path.join(DATA_PATH, "fineweb_val_*.bin")
 VOCAB_SIZE = 1024
